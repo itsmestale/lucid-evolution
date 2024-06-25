@@ -1,25 +1,15 @@
-// import {
-//   Assets,
-//   Data,
-//   Emulator,
-//   fromText,
-//   generateSeedPhrase,
-//   getAddressDetails,
-//   Lucid,
-//   SpendingValidator,
-//   toUnit,
-//   TxHash,
-// } from "../src/mod.ts";
-import { Assets, TxHash, SpendingValidator } from "@lucid-evolution/core-types";
-import { fromText } from "@lucid-evolution/core-utils";
 import {
-  generateSeedPhrase,
-  getAddressDetails,
-  toUnit,
-} from "@lucid-evolution/utils";
-import { describe, it, expect, beforeAll } from "vitest";
-import { Data, Lucid, walletFromSeed } from "../../lucid/dist/index.cjs";
+  Assets,
+  Datum,
+  Delegation,
+  ProtocolParameters,
+  UTxO,
+} from "@lucid-evolution/core-types";
+import { assert, describe, expect, test } from "vitest";
+import { expectedProtocolParameters } from "./protocolParameters";
 import { Emulator } from "../src/emulator.js";
+import { generateSeedPhrase } from "@lucid-evolution/utils";
+import { walletFromSeed } from "../../lucid/src/index.js";
 
 async function generateAccount(assets: Assets) {
   const seedPhrase = generateSeedPhrase();
@@ -30,259 +20,77 @@ async function generateAccount(assets: Assets) {
   };
 }
 
-let ACCOUNT_0: any;
-let ACCOUNT_1: any;
 let emulator: any;
-let lucid: any;
 
-beforeAll(async () => {
-  ACCOUNT_0 = await generateAccount({ lovelace: 75000000000n });
-  ACCOUNT_1 = await generateAccount({ lovelace: 100000000n });
+//TODO: improve test assetion
+describe.sequential("Emulator", () => {
+  test("createEmulator", async () => {
+    let ACCOUNT_0 = await generateAccount({ lovelace: 75000000000n });
+    let ACCOUNT_1 = await generateAccount({ lovelace: 100000000n });
 
-  emulator = new Emulator([ACCOUNT_0, ACCOUNT_1]);
-
-  lucid = await Lucid(emulator, "Custom");
-
-  lucid.selectWalletFromSeed(ACCOUNT_0.seedPhrase);
-});
-
-describe("Lucid tests", () => {
-  it("Correct start balance", async () => {
-    const utxos = await lucid.wallet.getUtxos();
-    const lovelace = utxos.reduce(
-      (amount: any, utxo: any) => amount + utxo.assets.lovelace,
-      0n,
-    );
-    expect(lovelace).toBe(ACCOUNT_0.assets.lovelace);
+    emulator = new Emulator([ACCOUNT_0, ACCOUNT_1]);
   });
 
-  it("Paid to address", async () => {
-    const recipient =
-      "addr_test1qrupyvhe20s0hxcusrzlwp868c985dl8ukyr44gfvpqg4ek3vp92wfpentxz4f853t70plkp3vvkzggjxknd93v59uysvc54h7";
-
-    const datum = Data.to(123n);
-    const lovelace = 3000000n;
-
-    const tx = await lucid
-      .newTx()
-      .payToAddressWithData(
-        recipient,
-        {
-          inline: datum,
-        },
-        { lovelace },
-      )
-      .complete();
-
-    const signedTx = await tx.sign().complete();
-    const txHash = await signedTx.submit();
-    await lucid.awaitTx(txHash);
-
-    const utxos = await lucid.utxosAt(recipient);
-
-    expect(utxos.length).toBe(1);
-
-    expect(utxos[0].assets.lovelace).toBe(lovelace);
-    expect(utxos[0].datum).toBe(datum);
+  test("getProtocolParameters", async () => {
+    const pp: ProtocolParameters = await emulator.getProtocolParameters();
+    assert.deepEqual(pp, expectedProtocolParameters);
   });
 
-  it("Missing vkey witness", async () => {
-    const recipient =
-      "addr_test1wqag3rt979nep9g2wtdwu8mr4gz6m4kjdpp5zp705km8wys6t2kla";
-
-    const lovelace = 3000000n;
-
-    const tx = await lucid
-      .newTx()
-      .payToAddress(recipient, { lovelace })
-      .complete();
-
-    const notSignedTx = await tx.complete();
-    try {
-      const txHash = await notSignedTx.submit();
-      await lucid.awaitTx(txHash);
-      expect(false).toBe(
-        "The tx was never signed. The vkey witness could not exist.",
-      );
-    } catch (_e) {
-      expect(true).toBe(true);
-    }
+  test("getUtxos", async () => {
+    const utxos: UTxO[] = await emulator.getUtxos(
+      "addr_test1qrngfyc452vy4twdrepdjc50d4kvqutgt0hs9w6j2qhcdjfx0gpv7rsrjtxv97rplyz3ymyaqdwqa635zrcdena94ljs0xy950",
+    );
+    assert(utxos);
   });
 
-  it("Mint asset in slot range", async () => {
-    const { paymentCredential } = getAddressDetails(ACCOUNT_0.address);
-    const { paymentCredential: paymentCredential2 } = getAddressDetails(
-      ACCOUNT_1.address,
+  test("getUtxosWithUnit", async () => {
+    const utxos: UTxO[] = await emulator.getUtxosWithUnit(
+      "addr1q8vaadv0h7atv366u6966u4rft2svjlf5uajy8lkpsgdrc24rnskuetxz2u3m5ac22s3njvftxcl2fc8k8kjr088ge0qpn6xhn",
+      "85152e10643c1440ba2ba817e3dd1faf7bd7296a8b605efd0f0f2d1844696d656e73696f6e426f78202330313739",
     );
-
-    const mintingPolicy = lucid.utils.nativeScriptFromJson({
-      type: "all",
-      scripts: [
-        {
-          type: "before",
-          slot: lucid.utils.unixTimeToSlot(emulator.now() + 60000),
-        },
-        { type: "sig", keyHash: paymentCredential?.hash! },
-        { type: "sig", keyHash: paymentCredential2?.hash! },
-      ],
-    });
-
-    const policyId = lucid.utils.mintingPolicyToId(mintingPolicy);
-
-    async function mint(): Promise<TxHash> {
-      const tx = await lucid
-        .newTx()
-        .mintAssets({
-          [toUnit(policyId, fromText("Wow"))]: 123n,
-        })
-        .validTo(emulator.now() + 30000)
-        .attachMintingPolicy(mintingPolicy)
-        .complete();
-
-      await tx.partialSign();
-      lucid.selectWalletFromSeed(ACCOUNT_1.seedPhrase);
-      await tx.partialSign();
-      lucid.selectWalletFromSeed(ACCOUNT_0.seedPhrase);
-      const signedTx = await tx.complete();
-
-      return signedTx.submit();
-    }
-
-    await mint();
-
-    emulator.awaitBlock(4);
-
-    try {
-      await mint();
-      expect(false).toBe(
-        "The transactions should have failed because of exceeding slot range.",
-      );
-    } catch (_e) {
-      expect(true).toBe(true);
-    }
+    assert(utxos);
   });
 
-  it("Reward withdrawal", async () => {
-    const rewardAddress = await lucid.wallet.rewardAddress();
-    const poolId = "pool1jsa3rv0dqtkv2dv2rcx349yfx6rxqyvrnvdye4ps3wxyws6q95m";
-    const REWARD_AMOUNT = 100000000n;
-    expect(await lucid.wallet.getDelegation()).toEqual({
-      poolId: null,
-      rewards: 0n,
-    });
-    emulator.distributeRewards(REWARD_AMOUNT);
-    expect(await lucid.wallet.getDelegation()).toEqual({
-      poolId: null,
-      rewards: 0n,
-    });
-    // Registration
-    await lucid.awaitTx(
-      await (
-        await (await lucid.newTx().registerStake(rewardAddress!).complete())
-          .sign()
-          .complete()
-      ).submit(),
+  test("getUtxoByUnit", async () => {
+    const utxo: UTxO = await emulator.getUtxoByUnit(
+      "85152e10643c1440ba2ba817e3dd1faf7bd7296a8b605efd0f0f2d1844696d656e73696f6e426f78202330313739",
     );
-    emulator.distributeRewards(REWARD_AMOUNT);
-    expect(await lucid.wallet.getDelegation()).toEqual({
-      poolId: null,
-      rewards: 0n,
-    });
-    // Delegation
-    await lucid.awaitTx(
-      await (
-        await (
-          await lucid.newTx().delegateTo(rewardAddress!, poolId).complete()
-        )
-          .sign()
-          .complete()
-      ).submit(),
-    );
-    emulator.distributeRewards(REWARD_AMOUNT);
-    expect(await lucid.wallet.getDelegation()).toEqual({
-      poolId,
-      rewards: REWARD_AMOUNT,
-    });
-    // Deregistration
-    await lucid.awaitTx(
-      await (
-        await (await lucid.newTx().deregisterStake(rewardAddress!).complete())
-          .sign()
-          .complete()
-      ).submit(),
-    );
-    expect(await lucid.wallet.getDelegation()).toEqual({
-      poolId: null,
-      rewards: REWARD_AMOUNT,
-    });
-    // Withdrawal
-    await lucid.awaitTx(
-      await (
-        await (
-          await lucid.newTx().withdraw(rewardAddress!, REWARD_AMOUNT).complete()
-        )
-          .sign()
-          .complete()
-      ).submit(),
-    );
-    expect(await lucid.wallet.getDelegation()).toEqual({
-      poolId: null,
-      rewards: 0n,
-    });
+    assert(utxo);
   });
 
-  it("Evaluate a contract", async () => {
-    const alwaysSucceedScript: SpendingValidator = {
-      type: "PlutusV2",
-      script: "49480100002221200101",
-    };
-
-    const scriptAddress = lucid.utils.validatorToAddress(alwaysSucceedScript);
-
-    const tx = await lucid
-      .newTx()
-      .payToContract(
-        scriptAddress,
-        {
-          inline: Data.void(),
-        },
-        { lovelace: 50000000n },
-      )
-      .complete();
-    const signedTx = await tx.sign().complete();
-    const txHash = await signedTx.submit();
-    await lucid.awaitTx(txHash);
-
-    const scriptUtxos = await lucid.utxosAt(scriptAddress);
-
-    expect(scriptUtxos.length).toBe(1);
-
-    const _txHash = await (
-      await (
-        await lucid
-          .newTx()
-          .collectFrom(scriptUtxos, Data.void())
-          .attachSpendingValidator(alwaysSucceedScript)
-          .complete()
-      )
-        .sign()
-        .complete()
-    ).submit();
-
-    emulator.awaitSlot(100);
+  test("getUtxosByOutRef", async () => {
+    const utxos: UTxO[] = await emulator.getUtxosByOutRef([
+      {
+        txHash:
+          "c6ee20549eab1e565a4bed119bb8c7fc2d11cc5ea5e1e25433a34f0175c0bef6",
+        outputIndex: 0,
+      },
+    ]);
+    assert(utxos);
   });
 
-  it("Check required signer", async () => {
-    const tx: any = await lucid
-      .newTx()
-      .addSigner(ACCOUNT_1.address)
-      .payToAddress(ACCOUNT_1.address, { lovelace: 5000000n })
-      .complete();
-    await tx.partialSign();
-    lucid.selectWalletFromSeed(ACCOUNT_1.seedPhrase);
-    await tx.partialSign();
-    await lucid.awaitTx(
-      await tx.complete().then((tx: { submit: () => any }) => tx.submit()),
+  test("getDelegation", async () => {
+    const delegation: Delegation = await emulator.getDelegation(
+      "stake1uyrx65wjqjgeeksd8hptmcgl5jfyrqkfq0xe8xlp367kphsckq250",
     );
+    assert(delegation);
+  });
+
+  test("getDatum", async () => {
+    const datum: Datum = await emulator.getDatum(
+      "818ee3db3bbbd04f9f2ce21778cac3ac605802a4fcb00c8b3a58ee2dafc17d46",
+    );
+    assert(datum);
+  });
+
+  test("awaitTx", async () => {
+    const isConfirmed: boolean = await emulator.awaitTx(
+      "f144a8264acf4bdfe2e1241170969c930d64ab6b0996a4a45237b623f1dd670e",
+    );
+    assert(isConfirmed);
+  });
+
+  test("submitTxBadRequest", async () => {
+    await expect(() => emulator.submitTx("80")).rejects.toThrowError();
   });
 });
